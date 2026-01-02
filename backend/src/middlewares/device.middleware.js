@@ -25,9 +25,16 @@ export const extractDeviceInfo = (req, res, next) => {
       .update(deviceFingerprint + JSON.stringify(deviceInfo))
       .digest('hex');
 
-    req.deviceId = deviceId;
-    req.deviceInfo = deviceInfo;
-    req.ipAddress = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+    let ip = req.headers['x-forwarded-for'] || req.ip || req.connection.remoteAddress;
+
+    // If multiple IPs are present (e.g., "ClientIP, ProxyIP"), grab the first one
+    if (ip && typeof ip === 'string' && ip.includes(',')) {
+      ip = ip.split(',')[0].trim();
+    }
+
+    req.deviceId = deviceId; // (defined earlier in your code)
+    req.deviceInfo = deviceInfo; // (defined earlier in your code)
+    req.ipAddress = ip; // ✅ Now this will be the Public IP
 
     next();
   } catch (error) {
