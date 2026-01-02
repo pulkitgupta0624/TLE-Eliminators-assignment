@@ -12,6 +12,8 @@ import sessionService from './services/session.service.js';
 
 const app = express();
 
+app.set('trust proxy', 1);
+
 // Connect to database
 connectDB();
 
