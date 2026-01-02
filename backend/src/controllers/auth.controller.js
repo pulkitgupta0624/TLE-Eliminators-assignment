@@ -46,7 +46,7 @@ export const login = async (req, res) => {
     const { email, password } = req.body;
     let { deviceId, deviceInfo, ipAddress } = req;
 
-    ipAddress = config.nodeEnv === 'development' ? '34.106.208.213' : realIp;
+    // ipAddress = config.nodeEnv === 'development' ? '34.106.208.213' : realIp;
     // ipAddress = config.nodeEnv === 'development' ? '2409:40d4:1c:3e86:6566:ae19:8437:e9da' : realIp;
 
 

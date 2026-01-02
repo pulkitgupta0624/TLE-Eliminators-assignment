@@ -49,13 +49,34 @@ setInterval(async () => {
   await sessionService.cleanupExpiredSessions();
 }, 60 * 60 * 1000);
 
-// Initial cleanup
-sessionService.cleanupExpiredSessions();
+// // Initial cleanup
+// sessionService.cleanupExpiredSessions();
 
-// Start server
-app.listen(config.port, () => {
-  console.log(`✅ Server running on port ${config.port}`);
-  console.log(`📝 Environment: ${config.nodeEnv}`);
-});
+// // Start server
+// app.listen(config.port, () => {
+//   console.log(`✅ Server running on port ${config.port}`);
+//   console.log(`📝 Environment: ${config.nodeEnv}`);
+// });
+
+const startServer = async () => {
+  try {
+    // 1. Wait for Database Connection
+    await connectDB();
+    
+    // 2. Start Listening
+    app.listen(config.port, () => {
+      console.log(`✅ Server running on port ${config.port}`);
+      console.log(`📝 Environment: ${config.nodeEnv}`);
+      
+      // 3. Run Initial Cleanup (Now safe because DB is connected)
+      sessionService.cleanupExpiredSessions();
+    });
+  } catch (error) {
+    console.error("❌ Failed to start server:", error);
+    process.exit(1);
+  }
+};
+
+startServer();
 
 export default app;
