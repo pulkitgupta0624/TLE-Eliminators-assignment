@@ -103,6 +103,7 @@ frontend/src/styles/user.css
 frontend/src/utils/deviceFingerprint.js
 frontend/src/utils/helpers.js
 frontend/vite.config.js
+README.md
 </directory_structure>
 
 <files>
@@ -174,70 +175,6 @@ Thumbs.db
     "nodemon": "^3.0.2"
   }
 }
-</file>
-
-<file path="backend/src/app.js">
-import express from 'express';
-import cookieParser from 'cookie-parser';
-import cors from 'cors';
-import helmet from 'helmet';
-import { connectDB } from './config/database.js';
-import { config } from './config/environment.js';
-import { errorHandler } from './middlewares/errorHandler.middleware.js';
-import authRoutes from './routes/auth.routes.js';
-import userRoutes from './routes/user.routes.js';
-import adminRoutes from './routes/admin.routes.js';
-import sessionService from './services/session.service.js';
-
-const app = express();
-
-// Connect to database
-connectDB();
-
-// Middleware
-app.use(helmet());
-app.use(cors({
-  origin: config.corsOrigin,
-  credentials: true
-}));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use(cookieParser());
-
-// Routes
-app.get('/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
-});
-
-app.use('/api/auth', authRoutes);
-app.use('/api/user', userRoutes);
-app.use('/api/admin', adminRoutes);
-
-// Error handling
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    message: 'Route not found'
-  });
-});
-
-app.use(errorHandler);
-
-// Cleanup job - runs every hour
-setInterval(async () => {
-  await sessionService.cleanupExpiredSessions();
-}, 60 * 60 * 1000);
-
-// Initial cleanup
-sessionService.cleanupExpiredSessions();
-
-// Start server
-app.listen(config.port, () => {
-  console.log(`✅ Server running on port ${config.port}`);
-  console.log(`📝 Environment: ${config.nodeEnv}`);
-});
-
-export default app;
 </file>
 
 <file path="backend/src/config/constants.js">
@@ -590,253 +527,6 @@ export const exportSystemLogs = async (req, res) => {
   } catch (error) {
     console.error('Export Error:', error);
     res.status(500).json({ success: false, message: 'Error exporting logs' });
-  }
-};
-</file>
-
-<file path="backend/src/controllers/auth.controller.js">
-import jwt from 'jsonwebtoken';
-import geoip from 'geoip-lite';
-import User from '../models/User.model.js';
-import Session from '../models/Session.model.js';
-import DeviceLog from '../models/DeviceLog.model.js';
-import sessionService from '../services/session.service.js';
-import ipRiskService from '../services/ipRisk.service.js';
-import suspiciousActivityService from '../services/suspiciousActivity.service.js';
-import { config } from '../config/environment.js';
-
-export const signup = async (req, res) => {
-  try {
-    const { name, email, password } = req.body;
-
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
-      return res.status(400).json({
-        success: false,
-        message: 'Email already registered'
-      });
-    }
-
-    const user = await User.create({
-      name,
-      email,
-      password,
-      role: 'user'
-    });
-
-    res.status(201).json({
-      success: true,
-      message: 'Account created successfully',
-      userId: user._id
-    });
-  } catch (error) {
-    console.error("❌ SIGNUP ERROR DETAILED:", error);
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-};
-
-export const login = async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    let { deviceId, deviceInfo, ipAddress } = req;
-
-    // ipAddress = config.nodeEnv === 'development' ? '34.106.208.213' : realIp;
-    ipAddress = config.nodeEnv === 'development' ? '2409:40d4:1c:3e86:6566:ae19:8437:e9da' : realIp;
-
-
-    const geo = geoip.lookup(ipAddress);
-    const location = geo ? {
-      country: geo.country,
-      city: geo.city,
-      latitude: geo.ll?.[0],
-      longitude: geo.ll?.[1]
-    } : {};
-
-    const ipAnalysis = await ipRiskService.analyzeIp(ipAddress);
-
-    let finalLocation = {};
-
-    if (ipAnalysis?.location?.country) {
-      finalLocation = ipAnalysis.location;
-    } else {
-      // 2. Fallback to local database (geoip-lite) if API fails
-      console.log("⚠️ Using local GeoIP fallback");
-      const geo = geoip.lookup(ipAddress);
-      if (geo) {
-        finalLocation = {
-          country: geo.country,
-          city: geo.city,
-          latitude: geo.ll?.[0],
-          longitude: geo.ll?.[1]
-        };
-      }
-    }
-
-    const user = await User.findOne({ email }).select('+password');
-    if (!user) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid email or password'
-      });
-    }
-
-    const isPasswordValid = await user.comparePassword(password);
-    if (!isPasswordValid) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid email or password'
-      });
-    }
-
-    if (!user.isActive) {
-      return res.status(403).json({
-        success: false,
-        message: 'Account is suspended. Contact admin.'
-      });
-    }
-
-    const activeSessions = await sessionService.getActiveSessionCount(user._id);
-    const existingDeviceSession = await Session.findOne({
-      userId: user._id,
-      deviceId,
-      isActive: true
-    });
-
-    if (!existingDeviceSession && activeSessions >= user.maxDevices) {
-      await DeviceLog.create({
-        userId: user._id,
-        action: 'device_limit_exceeded',
-        deviceId,
-        deviceInfo,
-        ipAddress,
-        location,
-        isSuspicious: true,
-        suspicionReason: `Device limit exceeded (${activeSessions}/${user.maxDevices})`
-      });
-
-      return res.status(403).json({
-        success: false,
-        message: 'Device limit exceeded',
-        maxDevices: user.maxDevices,
-        activeSessions
-      });
-    }
-
-    let session;
-    if (existingDeviceSession) {
-      session = existingDeviceSession;
-      session.lastActivity = new Date();
-      session.expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
-      if (location.city) session.location = location;
-      await session.save();
-    } else {
-      session = await sessionService.createSession(
-        user._id,
-        deviceId,
-        deviceInfo,
-        ipAddress,
-        location
-      );
-    }
-
-    // Check for suspicious activity
-    const travelCheck = await suspiciousActivityService.checkImpossibleTravel(
-      user._id,
-      location,
-      Date.now()
-    );
-
-    const isSuspicious = ipAnalysis.isRisky || travelCheck.isSuspicious;
-    const suspicionReasons = [
-      ipAnalysis.riskReason,
-      travelCheck.reason
-    ].filter(Boolean).join('; ');
-
-    await DeviceLog.create({
-      userId: user._id,
-      action: 'login',
-      deviceId,
-      deviceInfo,
-      ipAddress,
-      location,
-      isSuspicious,
-      suspicionReason: isSuspicious ? suspicionReasons : null
-    });
-
-    const token = jwt.sign(
-      { userId: user._id, sessionToken: session.sessionToken },
-      config.jwtSecret,
-      { expiresIn: config.jwtExpiry }
-    );
-
-    res.cookie('token', token, {
-      httpOnly: true,
-      secure: config.nodeEnv === 'production',
-      sameSite: 'strict',
-      maxAge: 24 * 60 * 60 * 1000
-    });
-
-    res.json({
-      success: true,
-      message: 'Login successful',
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role
-      },
-      token
-    });
-  } catch (error) {
-    console.error('Login Error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Server error during login'
-    });
-  }
-};
-
-export const logout = async (req, res) => {
-  try {
-    const sessionToken = req.session?.sessionToken;
-
-    if (sessionToken) {
-      await sessionService.invalidateSession(sessionToken);
-    }
-
-    res.clearCookie('token');
-    res.json({
-      success: true,
-      message: 'Logged out successfully'
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'Error during logout'
-    });
-  }
-};
-
-export const getCurrentUser = async (req, res) => {
-  try {
-    res.json({
-      success: true,
-      user: {
-        id: req.user._id,
-        name: req.user.name,
-        email: req.user.email,
-        role: req.user.role,
-        maxDevices: req.user.maxDevices
-      }
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching user'
-    });
   }
 };
 </file>
@@ -2098,34 +1788,6 @@ export const getCurrentUser = async () => {
   const response = await apiClient.get('/auth/me');
   return response.data;
 };
-</file>
-
-<file path="frontend/src/api/client.js">
-import axios from 'axios';
-
-const apiClient = axios.create({
-  baseURL: '/api',
-  withCredentials: true,
-  headers: {
-    'Content-Type': 'application/json'
-  }
-});
-
-apiClient.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      // If we have a window context (browser), redirect
-      if (window.location.pathname !== '/login' && window.location.pathname !== '/signup') {
-        localStorage.removeItem('user');
-        window.location.href = '/login';
-      }
-    }
-    return Promise.reject(error);
-  }
-);
-
-export default apiClient;
 </file>
 
 <file path="frontend/src/api/user.api.js">
@@ -4556,25 +4218,392 @@ export function getDeviceIcon(deviceType) {
 }
 </file>
 
+<file path="backend/src/app.js">
+import express from 'express';
+import cookieParser from 'cookie-parser';
+import cors from 'cors';
+import helmet from 'helmet';
+import { connectDB } from './config/database.js';
+import { config } from './config/environment.js';
+import { errorHandler } from './middlewares/errorHandler.middleware.js';
+import authRoutes from './routes/auth.routes.js';
+import userRoutes from './routes/user.routes.js';
+import adminRoutes from './routes/admin.routes.js';
+import sessionService from './services/session.service.js';
+
+const app = express();
+
+// Connect to database
+connectDB();
+
+// Middleware
+app.use(helmet());
+app.use(cors({
+  origin: config.corsOrigin,
+  credentials: true
+}));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
+
+// Routes
+app.get('/health', (req, res) => {
+  res.json({ status: 'OK', timestamp: new Date().toISOString() });
+});
+
+app.use('/api/auth', authRoutes);
+app.use('/api/user', userRoutes);
+app.use('/api/admin', adminRoutes);
+
+// Error handling
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: 'Route not found'
+  });
+});
+
+app.use(errorHandler);
+
+// Cleanup job - runs every hour
+setInterval(async () => {
+  await sessionService.cleanupExpiredSessions();
+}, 60 * 60 * 1000);
+
+// // Initial cleanup
+// sessionService.cleanupExpiredSessions();
+
+// // Start server
+// app.listen(config.port, () => {
+//   console.log(`✅ Server running on port ${config.port}`);
+//   console.log(`📝 Environment: ${config.nodeEnv}`);
+// });
+
+const startServer = async () => {
+  try {
+    // 1. Wait for Database Connection
+    await connectDB();
+    
+    // 2. Start Listening
+    app.listen(config.port, () => {
+      console.log(`✅ Server running on port ${config.port}`);
+      console.log(`📝 Environment: ${config.nodeEnv}`);
+      
+      // 3. Run Initial Cleanup (Now safe because DB is connected)
+      sessionService.cleanupExpiredSessions();
+    });
+  } catch (error) {
+    console.error("❌ Failed to start server:", error);
+    process.exit(1);
+  }
+};
+
+startServer();
+
+export default app;
+</file>
+
+<file path="backend/src/controllers/auth.controller.js">
+import jwt from 'jsonwebtoken';
+import geoip from 'geoip-lite';
+import User from '../models/User.model.js';
+import Session from '../models/Session.model.js';
+import DeviceLog from '../models/DeviceLog.model.js';
+import sessionService from '../services/session.service.js';
+import ipRiskService from '../services/ipRisk.service.js';
+import suspiciousActivityService from '../services/suspiciousActivity.service.js';
+import { config } from '../config/environment.js';
+
+export const signup = async (req, res) => {
+  try {
+    const { name, email, password } = req.body;
+
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email already registered'
+      });
+    }
+
+    const user = await User.create({
+      name,
+      email,
+      password,
+      role: 'user'
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Account created successfully',
+      userId: user._id
+    });
+  } catch (error) {
+    console.error("❌ SIGNUP ERROR DETAILED:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+export const login = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    let { deviceId, deviceInfo, ipAddress } = req;
+
+    // ipAddress = config.nodeEnv === 'development' ? '34.106.208.213' : realIp;
+    // ipAddress = config.nodeEnv === 'development' ? '2409:40d4:1c:3e86:6566:ae19:8437:e9da' : realIp;
+
+
+    const geo = geoip.lookup(ipAddress);
+    const location = geo ? {
+      country: geo.country,
+      city: geo.city,
+      latitude: geo.ll?.[0],
+      longitude: geo.ll?.[1]
+    } : {};
+
+    const ipAnalysis = await ipRiskService.analyzeIp(ipAddress);
+
+    let finalLocation = {};
+
+    if (ipAnalysis?.location?.country) {
+      finalLocation = ipAnalysis.location;
+    } else {
+      // 2. Fallback to local database (geoip-lite) if API fails
+      console.log("⚠️ Using local GeoIP fallback");
+      const geo = geoip.lookup(ipAddress);
+      if (geo) {
+        finalLocation = {
+          country: geo.country,
+          city: geo.city,
+          latitude: geo.ll?.[0],
+          longitude: geo.ll?.[1]
+        };
+      }
+    }
+
+    const user = await User.findOne({ email }).select('+password');
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or password'
+      });
+    }
+
+    const isPasswordValid = await user.comparePassword(password);
+    if (!isPasswordValid) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or password'
+      });
+    }
+
+    if (!user.isActive) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account is suspended. Contact admin.'
+      });
+    }
+
+    const activeSessions = await sessionService.getActiveSessionCount(user._id);
+    const existingDeviceSession = await Session.findOne({
+      userId: user._id,
+      deviceId,
+      isActive: true
+    });
+
+    if (!existingDeviceSession && activeSessions >= user.maxDevices) {
+      await DeviceLog.create({
+        userId: user._id,
+        action: 'device_limit_exceeded',
+        deviceId,
+        deviceInfo,
+        ipAddress,
+        location,
+        isSuspicious: true,
+        suspicionReason: `Device limit exceeded (${activeSessions}/${user.maxDevices})`
+      });
+
+      return res.status(403).json({
+        success: false,
+        message: 'Device limit exceeded',
+        maxDevices: user.maxDevices,
+        activeSessions
+      });
+    }
+
+    let session;
+    if (existingDeviceSession) {
+      session = existingDeviceSession;
+      session.lastActivity = new Date();
+      session.expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      if (location.city) session.location = location;
+      await session.save();
+    } else {
+      session = await sessionService.createSession(
+        user._id,
+        deviceId,
+        deviceInfo,
+        ipAddress,
+        location
+      );
+    }
+
+    // Check for suspicious activity
+    const travelCheck = await suspiciousActivityService.checkImpossibleTravel(
+      user._id,
+      location,
+      Date.now()
+    );
+
+    const isSuspicious = ipAnalysis.isRisky || travelCheck.isSuspicious;
+    const suspicionReasons = [
+      ipAnalysis.riskReason,
+      travelCheck.reason
+    ].filter(Boolean).join('; ');
+
+    await DeviceLog.create({
+      userId: user._id,
+      action: 'login',
+      deviceId,
+      deviceInfo,
+      ipAddress,
+      location,
+      isSuspicious,
+      suspicionReason: isSuspicious ? suspicionReasons : null
+    });
+
+    const token = jwt.sign(
+      { userId: user._id, sessionToken: session.sessionToken },
+      config.jwtSecret,
+      { expiresIn: config.jwtExpiry }
+    );
+
+    res.cookie('token', token, {
+      httpOnly: true,
+      secure: config.nodeEnv === 'production',
+      sameSite: 'strict',
+      maxAge: 24 * 60 * 60 * 1000
+    });
+
+    res.json({
+      success: true,
+      message: 'Login successful',
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role
+      },
+      token
+    });
+  } catch (error) {
+    console.error('Login Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error during login'
+    });
+  }
+};
+
+export const logout = async (req, res) => {
+  try {
+    const sessionToken = req.session?.sessionToken;
+
+    if (sessionToken) {
+      await sessionService.invalidateSession(sessionToken);
+    }
+
+    res.clearCookie('token');
+    res.json({
+      success: true,
+      message: 'Logged out successfully'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Error during logout'
+    });
+  }
+};
+
+export const getCurrentUser = async (req, res) => {
+  try {
+    res.json({
+      success: true,
+      user: {
+        id: req.user._id,
+        name: req.user.name,
+        email: req.user.email,
+        role: req.user.role,
+        maxDevices: req.user.maxDevices
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching user'
+    });
+  }
+};
+</file>
+
+<file path="frontend/src/api/client.js">
+import axios from 'axios';
+
+const apiClient = axios.create({
+  baseURL: import.meta.env.VITE_API_URL || '/api',
+  withCredentials: true,
+  headers: {
+    'Content-Type': 'application/json'
+  }
+});
+
+apiClient.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      // If we have a window context (browser), redirect
+      if (window.location.pathname !== '/login' && window.location.pathname !== '/signup') {
+        localStorage.removeItem('user');
+        window.location.href = '/login';
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
+export default apiClient;
+</file>
+
 <file path="frontend/vite.config.js">
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 
 // https://vite.dev/config/
-export default defineConfig({
-  plugins: [react()],
-  server: {
-    port: 3000,
-    proxy: {
-      '/api': {
-        target: 'http://localhost:5000',
-        changeOrigin: true
+export default defineConfig(({ mode }) => {
+  // Load env file based on `mode` in the current working directory.
+  // The third parameter '' ensures we load all env vars, regardless of prefix.
+  const env = loadEnv(mode, process.cwd(), '');
+
+  return {
+    plugins: [react()],
+    server: {
+      port: 3000,
+      proxy: {
+        '/api': {
+          // Now we use the loaded 'env' variable instead of import.meta.env
+          target: env.VITE_API_URL || 'http://localhost:5000',
+          changeOrigin: true
+        }
       }
+    },
+    build: {
+      outDir: 'dist',
+      assetsDir: 'assets'
     }
-  },
-  build: {
-    outDir: 'dist',
-    assetsDir: 'assets'
   }
 })
 </file>
